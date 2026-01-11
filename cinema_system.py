@@ -1,13 +1,28 @@
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
+from docx import Document
+from docx.shared import Pt, RGBColor, Inches
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+import openpyxl
+from openpyxl.cell import Cell, MergedCell
+from openpyxl.chart import BarChart, Reference
+from openpyxl.styles import Font, Alignment, PatternFill
+from openpyxl.utils import get_column_letter
+from pptx import Presentation
+from pptx.util import Inches as PptxInches, Pt as PptxPt
+from pptx.enum.text import PP_ALIGN
+from pptx.dml.color import RGBColor as PptxRGBColor
 
 
 class CinemaSystem:
     def __init__(self):
         self.theatres_dir = "theatres"
+        self.reports_dir = "reports"
         if not os.path.exists(self.theatres_dir):
             os.makedirs(self.theatres_dir)
+        if not os.path.exists(self.reports_dir):
+            os.makedirs(self.reports_dir)
 
     def add_theatre(self, name):
         theatre_data = {
@@ -236,6 +251,366 @@ class CinemaSystem:
         print(f"{'=' * 60}\n")
         return True
 
+    def generate_monthly_schedule_docx(self):
+        """Генерация расписания сеансов за прошедший месяц в формате DOCX"""
+        print("\n--- ГЕНЕРАЦИЯ РАСПИСАНИЯ СЕАНСОВ ---")
+
+        current_date = datetime.now()
+        last_month_start = (current_date.replace(day=1) - timedelta(days=1)).replace(day=1)
+        last_month_end = current_date.replace(day=1) - timedelta(days=1)
+
+        doc = Document()
+
+        # Заголовок
+        title = doc.add_heading('РАСПИСАНИЕ СЕАНСОВ', 0)
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        subtitle = doc.add_paragraph(
+            f'За период: {last_month_start.strftime("%d.%m.%Y")} - {last_month_end.strftime("%d.%m.%Y")}')
+        subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        subtitle_format = subtitle.runs[0]
+        subtitle_format.font.size = Pt(14)
+        subtitle_format.font.color.rgb = RGBColor(128, 128, 128)
+
+        doc.add_paragraph()
+
+        # Собираем данные о сеансах
+        sessions_found = False
+
+        for theatre_name in self.list_theatres():
+            theatre = self.get_theatre(theatre_name)
+            theatre_sessions = []
+
+            for hall in theatre["halls"]:
+                for session in hall["sessions"]:
+                    try:
+                        session_time = datetime.strptime(session["start_time"], "%Y-%m-%d %H:%M")
+                        if last_month_start <= session_time <= last_month_end:
+                            theatre_sessions.append({
+                                "hall": hall["number"],
+                                "movie": session["movie"],
+                                "time": session_time,
+                                "duration": session["duration"]
+                            })
+                    except ValueError:
+                        pass
+
+            if theatre_sessions:
+                sessions_found = True
+
+                # Заголовок кинотеатра
+                theatre_heading = doc.add_heading(f'Кинотеатр: {theatre_name}', 1)
+                theatre_heading.runs[0].font.color.rgb = RGBColor(0, 51, 102)
+
+                # Сортируем сеансы по дате
+                theatre_sessions.sort(key=lambda x: x["time"])
+
+                # Группируем по датам
+                sessions_by_date = {}
+                for session in theatre_sessions:
+                    date_key = session["time"].strftime("%d.%m.%Y")
+                    if date_key not in sessions_by_date:
+                        sessions_by_date[date_key] = []
+                    sessions_by_date[date_key].append(session)
+
+                # Выводим по датам
+                for date_key in sorted(sessions_by_date.keys()):
+                    date_heading = doc.add_heading(f'{date_key}', 2)
+                    date_heading.runs[0].font.color.rgb = RGBColor(51, 102, 153)
+
+                    for session in sessions_by_date[date_key]:
+                        session_text = doc.add_paragraph()
+                        session_text.add_run(f'🎬 {session["movie"]}').bold = True
+                        session_text.add_run(f'\n   Зал: {session["hall"]} | ')
+                        session_text.add_run(f'Время: {session["time"].strftime("%H:%M")} | ')
+                        session_text.add_run(f'Длительность: {session["duration"]} мин')
+                        session_text.paragraph_format.left_indent = Inches(0.25)
+
+                    doc.add_paragraph()
+
+                doc.add_page_break()
+
+        if not sessions_found:
+            doc.add_paragraph("За прошедший месяц сеансы не найдены.")
+
+        # Сохраняем документ
+        filename = os.path.join(self.reports_dir, f'schedule_{last_month_start.strftime("%Y-%m")}.docx')
+        doc.save(filename)
+        print(f"\nРасписание успешно сохранено: {filename}")
+        return filename
+
+    def generate_occupancy_chart_xlsx(self):
+        """Генерация графика загруженности кинотеатров в зависимости от времени суток в формате XLSX"""
+        print("\n--- ГЕНЕРАЦИЯ ГРАФИКА ЗАГРУЖЕННОСТИ ---")
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Загруженность"
+
+        # Заголовок
+        ws['A1'] = 'ГРАФИК ЗАГРУЖЕННОСТИ КИНОТЕАТРОВ ПО ВРЕМЕНИ СУТОК'
+        ws['A1'].font = Font(size=16, bold=True, color='FFFFFF')
+        ws['A1'].fill = PatternFill(start_color='0033AA', end_color='0033AA', fill_type='solid')
+        ws['A1'].alignment = Alignment(horizontal='center', vertical='center')
+        ws.merge_cells('A1:E1')
+        ws.row_dimensions[1].height = 30
+
+        # Временные интервалы
+        time_intervals = {
+            "Утро (6-12)": (6, 12),
+            "День (12-18)": (12, 18),
+            "Вечер (18-22)": (18, 22),
+            "Ночь (22-6)": (22, 6)
+        }
+
+        # Заголовки столбцов
+        ws['A3'] = 'Кинотеатр'
+        ws['A3'].font = Font(bold=True, size=12)
+        ws['A3'].fill = PatternFill(start_color='CCE5FF', end_color='CCE5FF', fill_type='solid')
+
+        col = 2
+        for interval_name in time_intervals.keys():
+            ws.cell(row=3, column=col).value = interval_name
+            ws.cell(row=3, column=col).font = Font(bold=True, size=11)
+            ws.cell(row=3, column=col).fill = PatternFill(start_color='CCE5FF', end_color='CCE5FF', fill_type='solid')
+            ws.cell(row=3, column=col).alignment = Alignment(horizontal='center')
+            col += 1
+
+        # Собираем данные
+        row = 4
+        data_found = False
+
+        for theatre_name in self.list_theatres():
+            theatre = self.get_theatre(theatre_name)
+
+            occupancy = {interval: {"occupied": 0, "total": 0} for interval in time_intervals.keys()}
+
+            for hall in theatre["halls"]:
+                for session in hall["sessions"]:
+                    try:
+                        session_time = datetime.strptime(session["start_time"], "%Y-%m-%d %H:%M")
+                        hour = session_time.hour
+
+                        # Определяем интервал
+                        for interval_name, (start_h, end_h) in time_intervals.items():
+                            if start_h < end_h:
+                                if start_h <= hour < end_h:
+                                    interval_key = interval_name
+                                    break
+                            else:  # Ночной интервал
+                                if hour >= start_h or hour < end_h:
+                                    interval_key = interval_name
+                                    break
+                        else:
+                            continue
+
+                        # Подсчитываем занятость
+                        for row_seats in session["seats"]:
+                            for seat in row_seats:
+                                occupancy[interval_key]["total"] += 1
+                                if seat:
+                                    occupancy[interval_key]["occupied"] += 1
+
+                        data_found = True
+                    except ValueError:
+                        pass
+
+            # Записываем данные
+            ws.cell(row=row, column=1).value = theatre_name
+            ws.cell(row=row, column=1).font = Font(bold=True)
+
+            col = 2
+            for interval_name in time_intervals.keys():
+                if occupancy[interval_name]["total"] > 0:
+                    percentage = (occupancy[interval_name]["occupied"] / occupancy[interval_name]["total"]) * 100
+                    ws.cell(row=row, column=col).value = round(percentage, 1)
+                    ws.cell(row=row, column=col).number_format = '0.0"%"'
+                else:
+                    ws.cell(row=row, column=col).value = 0
+                    ws.cell(row=row, column=col).number_format = '0.0"%"'
+
+                ws.cell(row=row, column=col).alignment = Alignment(horizontal='center')
+                col += 1
+
+            row += 1
+
+        if not data_found:
+            ws['A5'] = 'Данные о сеансах не найдены'
+            ws['A5'].font = Font(italic=True, color='999999')
+        else:
+            # Создаем диаграмму
+            chart = BarChart()
+            chart.type = "col"
+            chart.style = 10
+            chart.title = "Загруженность по времени суток (%)"
+            chart.y_axis.title = 'Процент занятости'
+            chart.x_axis.title = 'Время суток'
+
+            data = Reference(ws, min_col=2, min_row=3, max_row=row - 1, max_col=5)
+            cats = Reference(ws, min_col=2, min_row=3, max_row=3, max_col=5)
+
+            chart.add_data(data, titles_from_data=True)
+            chart.set_categories(cats)
+            chart.height = 10
+            chart.width = 20
+
+            ws.add_chart(chart, f"A{row + 2}")
+
+        # Автоподбор ширины столбцов
+        for column in ws.columns:
+            max_length = 0
+            if isinstance(column[0], Cell):
+                column_letter = column[0].column_letter
+            else:
+                column_letter = get_column_letter(column[0].column)
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column_letter].width = adjusted_width
+
+        # Сохраняем файл
+        filename = os.path.join(self.reports_dir, f'occupancy_{datetime.now().strftime("%Y%m%d")}.xlsx')
+        wb.save(filename)
+        print(f"\n График загруженности успешно сохранен: {filename}")
+        return filename
+
+    def generate_movie_promo_pptx(self, movie_name):
+        """Генерация рекламного буклета для фильма в формате PPTX"""
+        print(f"\n--- ГЕНЕРАЦИЯ РЕКЛАМНОГО БУКЛЕТА ДЛЯ '{movie_name}' ---")
+
+        prs = Presentation()
+        prs.slide_width = PptxInches(10)
+        prs.slide_height = PptxInches(7.5)
+
+        # Слайд 1: Титульный
+        slide1 = prs.slides.add_slide(prs.slide_layouts[6])  # Пустой слайд
+
+        # Фон
+        background = slide1.shapes.add_shape(
+            1, 0, 0, prs.slide_width, prs.slide_height
+        )
+        fill = background.fill
+        fill.solid()
+        fill.fore_color.rgb = PptxRGBColor(10, 25, 47)
+
+        # Заголовок
+        title_box = slide1.shapes.add_textbox(
+            PptxInches(1), PptxInches(2.5), PptxInches(8), PptxInches(1.5)
+        )
+        title_frame = title_box.text_frame
+        title_frame.text = movie_name.upper()
+        title_paragraph = title_frame.paragraphs[0]
+        title_paragraph.alignment = PP_ALIGN.CENTER
+        title_paragraph.font.size = PptxPt(60)
+        title_paragraph.font.bold = True
+        title_paragraph.font.color.rgb = PptxRGBColor(255, 215, 0)
+
+        # Подзаголовок
+        subtitle_box = slide1.shapes.add_textbox(
+            PptxInches(1), PptxInches(4.5), PptxInches(8), PptxInches(0.8)
+        )
+        subtitle_frame = subtitle_box.text_frame
+        subtitle_frame.text = "Смотрите в наших кинотеатрах!"
+        subtitle_paragraph = subtitle_frame.paragraphs[0]
+        subtitle_paragraph.alignment = PP_ALIGN.CENTER
+        subtitle_paragraph.font.size = PptxPt(28)
+        subtitle_paragraph.font.color.rgb = PptxRGBColor(255, 255, 255)
+
+        # Собираем информацию о сеансах
+        sessions_data = []
+
+        for theatre_name in self.list_theatres():
+            theatre = self.get_theatre(theatre_name)
+            theatre_sessions = []
+
+            for hall in theatre["halls"]:
+                for session in hall["sessions"]:
+                    if session["movie"] == movie_name:
+                        try:
+                            session_time = datetime.strptime(session["start_time"], "%Y-%m-%d %H:%M")
+                            theatre_sessions.append({
+                                "hall": hall["number"],
+                                "time": session_time,
+                                "duration": session["duration"]
+                            })
+                        except ValueError:
+                            pass
+
+            if theatre_sessions:
+                theatre_sessions.sort(key=lambda x: x["time"])
+                sessions_data.append({
+                    "theatre": theatre_name,
+                    "sessions": theatre_sessions
+                })
+
+        if not sessions_data:
+            # Слайд с сообщением об отсутствии сеансов
+            slide2 = prs.slides.add_slide(prs.slide_layouts[6])
+            background2 = slide2.shapes.add_shape(
+                1, 0, 0, prs.slide_width, prs.slide_height
+            )
+            fill2 = background2.fill
+            fill2.solid()
+            fill2.fore_color.rgb = PptxRGBColor(240, 240, 240)
+
+            text_box = slide2.shapes.add_textbox(
+                PptxInches(2), PptxInches(3), PptxInches(6), PptxInches(1)
+            )
+            text_frame = text_box.text_frame
+            text_frame.text = f"Сеансы фильма '{movie_name}' не найдены"
+            text_paragraph = text_frame.paragraphs[0]
+            text_paragraph.alignment = PP_ALIGN.CENTER
+            text_paragraph.font.size = PptxPt(24)
+            text_paragraph.font.color.rgb = PptxRGBColor(100, 100, 100)
+        else:
+            # Слайды с информацией о кинотеатрах
+            for theatre_data in sessions_data:
+                slide = prs.slides.add_slide(prs.slide_layouts[6])
+
+                # Фон
+                background = slide.shapes.add_shape(
+                    1, 0, 0, prs.slide_width, prs.slide_height
+                )
+                fill = background.fill
+                fill.solid()
+                fill.fore_color.rgb = PptxRGBColor(245, 245, 250)
+
+                # Заголовок кинотеатра
+                theatre_title_box = slide.shapes.add_textbox(
+                    PptxInches(0.5), PptxInches(0.5), PptxInches(9), PptxInches(0.8)
+                )
+                theatre_title_frame = theatre_title_box.text_frame
+                theatre_title_frame.text = f"🎬 {theatre_data['theatre']}"
+                theatre_title_paragraph = theatre_title_frame.paragraphs[0]
+                theatre_title_paragraph.alignment = PP_ALIGN.CENTER
+                theatre_title_paragraph.font.size = PptxPt(36)
+                theatre_title_paragraph.font.bold = True
+                theatre_title_paragraph.font.color.rgb = PptxRGBColor(0, 51, 102)
+
+                # Информация о сеансах
+                sessions_box = slide.shapes.add_textbox(
+                    PptxInches(1), PptxInches(1.8), PptxInches(8), PptxInches(5)
+                )
+                sessions_frame = sessions_box.text_frame
+                sessions_frame.word_wrap = True
+
+                for i, session in enumerate(theatre_data['sessions'][:10]):  # Максимум 10 сеансов на слайд
+                    p = sessions_frame.add_paragraph() if i > 0 else sessions_frame.paragraphs[0]
+                    p.text = f"📅 {session['time'].strftime('%d.%m.%Y')} в {session['time'].strftime('%H:%M')} | Зал {session['hall']} | {session['duration']} мин"
+                    p.font.size = PptxPt(20)
+                    p.font.color.rgb = PptxRGBColor(50, 50, 50)
+                    p.space_after = PptxPt(12)
+
+        # Сохраняем презентацию
+        filename = os.path.join(self.reports_dir, f'promo_{movie_name.replace(" ", "_")}.pptx')
+        prs.save(filename)
+        print(f"\n✅ Рекламный буклет успешно сохранен: {filename}")
+        return filename
+
 
 def main():
     system = CinemaSystem()
@@ -255,6 +630,9 @@ def main():
         print("5. Найти ближайший сеанс фильма")
         print("6. Показать план зала")
         print("7. Показать список кинотеатров")
+        print("8. Сформировать расписание сеансов за месяц (DOCX)")
+        print("9. Сформировать график загруженности (XLSX)")
+        print("10. Сформировать рекламный буклет фильма (PPTX)")
         print("0. Выход")
         print("=" * 60)
 
@@ -436,6 +814,28 @@ def main():
                     for hall in theatre["halls"]:
                         print(f"  Зал №{hall['number']}: {hall['rows']} рядов x {hall['seats_per_row']} мест, "
                               f"Сеансов: {len(hall['sessions'])}")
+
+        elif choice == "8":
+            try:
+                system.generate_monthly_schedule_docx()
+            except Exception as e:
+                print(f"Ошибка при генерации расписания: {e}")
+
+        elif choice == "9":
+            try:
+                system.generate_occupancy_chart_xlsx()
+            except Exception as e:
+                print(f"Ошибка при генерации графика: {e}")
+
+        elif choice == "10":
+            movie_name = input("Введите название фильма для буклета: ").strip()
+            if movie_name:
+                try:
+                    system.generate_movie_promo_pptx(movie_name)
+                except Exception as e:
+                    print(f"Ошибка при генерации буклета: {e}")
+            else:
+                print("Название фильма не может быть пустым!")
 
         elif choice == "0":
             print("\nСпасибо за использование билетной системы! До свидания!")

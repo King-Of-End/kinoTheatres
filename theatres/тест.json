@@ -1,0 +1,55 @@
+{
+  "name": "тест",
+  "halls": [
+    {
+      "number": 1,
+      "rows": 3,
+      "seats_per_row": 10,
+      "sessions": [
+        {
+          "movie": "страдания и боль",
+          "start_time": "2026-06-06 06:06",
+          "duration": 90,
+          "seats": [
+            [
+              false,
+              false,
+              false,
+              false,
+              true,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}
